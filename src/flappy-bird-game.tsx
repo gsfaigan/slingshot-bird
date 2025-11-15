@@ -7,8 +7,11 @@ interface Pipe {
   baseWorldX: number;
   passed: boolean;
   id: number;
+  screenId: number;
+  isGoalPipe: boolean;
   movePattern: string;
   moveOffset: number;
+  pipeGap: number;
 }
 
 interface Coin {
@@ -32,7 +35,10 @@ const FlappyBird = () => {
   const [pipes, setPipes] = useState<Pipe[]>([]);
   const [score, setScore] = useState(0);
   const [gameState, setGameState] = useState('start');
-  const [highScore, setHighScore] = useState(0);
+  const [highScore, setHighScore] = useState(() => {
+    const saved = localStorage.getItem('slingshotBirdHighScore');
+    return saved ? parseInt(saved, 10) : 0;
+  });
   const [isDragging, setIsDragging] = useState(false);
   const [isFlying, setIsFlying] = useState(false);
   const [currentMouse, setCurrentMouse] = useState({ x: 150, y: 350 });
@@ -74,47 +80,88 @@ const FlappyBird = () => {
   const canvasRef = useRef<HTMLDivElement>(null);
   const lastPassedPipeRef = useRef(-1);
 
+  // Save high score to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('slingshotBirdHighScore', highScore.toString());
+  }, [highScore]);
+
   const generatePipes = () => {
     const initialPipes = [];
     const initialCoins = [];
+    let pipeId = 0;
     
-    for (let i = 0; i < 30; i++) {
-      const minHeight = 180;
-      const maxHeight = gameHeight - pipeGap - 180;
-      const height = Math.floor(Math.random() * (maxHeight - minHeight) + minHeight);
+    for (let screen = 0; screen < 30; screen++) {
+      const screenStartX = 600 + screen * pipeSpacing;
       
-      let movePattern = 'none';
-      if (i >= 10) {
-        movePattern = 'both';
-      } else if (i >= 5) {
-        movePattern = Math.random() > 0.5 ? 'vertical' : 'horizontal';
+      // Determine how many pipes for this screen
+      let numPipesInScreen = 1;
+      if (screen >= 20) {
+        numPipesInScreen = 4; // Lots of pipes after 20
+      } else if (screen >= 15) {
+        numPipesInScreen = 2; // Multiple pipes after 15
       }
       
-      initialPipes.push({
-        worldX: 600 + i * pipeSpacing,
-        baseTopHeight: height,
-        topHeight: height,
-        baseWorldX: 600 + i * pipeSpacing,
-        passed: false,
-        id: i,
-        movePattern: movePattern,
-        moveOffset: Math.random() * Math.PI * 2
-      });
-      
-      const coinStartX = 600 + i * pipeSpacing + pipeWidth + 50;
-      const gapCenterY = height + pipeGap / 2;
-      const numCoins = 5;
-      
-      for (let j = 0; j < numCoins; j++) {
-        const coinX = coinStartX + (j * 60);
-        const offsetY = Math.sin((j / numCoins) * Math.PI * 2) * 40;
+      for (let pipeInScreen = 0; pipeInScreen < numPipesInScreen; pipeInScreen++) {
+        // Increase gap for harder levels
+        const dynamicPipeGap = screen >= 20 ? 260 : screen >= 15 ? 240 : pipeGap;
         
-        initialCoins.push({
-          id: `${i}-${j}`,
-          worldX: coinX,
-          worldY: gapCenterY + offsetY,
-          pipeId: i
+        const minHeight = 180;
+        const maxHeight = gameHeight - dynamicPipeGap - 180;
+        const height = Math.floor(Math.random() * (maxHeight - minHeight) + minHeight);
+        
+        let movePattern = 'none';
+        if (screen >= 20) {
+          // After 20 points: all pipes move in sin wave (vertical)
+          movePattern = 'vertical';
+        } else if (screen >= 10) {
+          movePattern = 'both';
+        } else if (screen >= 5) {
+          movePattern = Math.random() > 0.5 ? 'vertical' : 'horizontal';
+        }
+        
+        // Space pipes within the screen
+        const pipeOffsetInScreen = pipeInScreen * (pipeSpacing / numPipesInScreen);
+        const worldX = screenStartX + pipeOffsetInScreen;
+        
+        initialPipes.push({
+          worldX: worldX,
+          baseTopHeight: height,
+          topHeight: height,
+          baseWorldX: worldX,
+          passed: false,
+          id: pipeId,
+          screenId: screen, // Track which screen this pipe belongs to
+          isGoalPipe: pipeInScreen === numPipesInScreen - 1, // Only last pipe in screen is goal
+          movePattern: movePattern,
+          moveOffset: Math.random() * Math.PI * 2,
+          pipeGap: dynamicPipeGap
         });
+        
+        // Only add coins for the first pipe in screens with multiple pipes (after level 15)
+        const shouldAddCoins = screen < 15 || pipeInScreen === 0;
+        
+        if (shouldAddCoins) {
+          const coinStartX = worldX + pipeWidth + 50;
+          const gapCenterY = height + dynamicPipeGap / 2;
+          const numCoins = 5;
+          
+          // Randomize coin pattern for screens 15+
+          const patternOffset = screen >= 15 ? Math.random() * Math.PI * 2 : 0;
+          
+          for (let j = 0; j < numCoins; j++) {
+            const coinX = coinStartX + (j * 60);
+            const offsetY = Math.sin((j / numCoins) * Math.PI * 2 + patternOffset) * 40;
+            
+            initialCoins.push({
+              id: `${pipeId}-${j}`,
+              worldX: coinX,
+              worldY: gapCenterY + offsetY,
+              pipeId: pipeId
+            });
+          }
+        }
+        
+        pipeId++;
       }
     }
     
@@ -156,7 +203,8 @@ const FlappyBird = () => {
           clearInterval(explosionAnim);
           setTimeout(() => {
             setGameState('gameOver');
-            if (score > highScore) setHighScore(score);
+            const newHighScore = Math.max(score, highScore);
+            if (newHighScore > highScore) setHighScore(newHighScore);
             setIsFlying(false);
           }, 40);
         }
@@ -343,14 +391,15 @@ const FlappyBird = () => {
       const stopLineX = pipeRight + 96;
       
       if (birdRight > pipeLeft && birdLeft < pipeRight) {
-        if (birdTop < pipe.topHeight || birdBottom > pipe.topHeight + pipeGap) {
+        if (birdTop < pipe.topHeight || birdBottom > pipe.topHeight + pipe.pipeGap) {
           triggerExplosion();
         }
       }
 
-      if (!pipe.passed && birdLeft >= stopLineX && pipe.id > lastPassedPipeRef.current) {
+      // Only check goal line for pipes marked as goal pipes
+      if (pipe.isGoalPipe && !pipe.passed && birdLeft >= stopLineX && pipe.screenId > lastPassedPipeRef.current) {
         pipe.passed = true;
-        lastPassedPipeRef.current = pipe.id;
+        lastPassedPipeRef.current = pipe.screenId;
         setScore(s => s + 1);
         setColorIndex(c => c + 1);
         
@@ -367,7 +416,8 @@ const FlappyBird = () => {
       
       if (score + 1 >= 30) {
         setGameState('win');
-        if (score + 1 > highScore) setHighScore(score + 1);
+        const newHighScore = Math.max(score + 1, highScore);
+        if (newHighScore > highScore) setHighScore(newHighScore);
         return;
       }
       
@@ -482,15 +532,15 @@ const FlappyBird = () => {
                   className="absolute bg-green-600 border-4 border-green-800 shadow-lg"
                   style={{ 
                     left: pipe.worldX, 
-                    top: pipe.topHeight + pipeGap, 
+                    top: pipe.topHeight + pipe.pipeGap, 
                     width: pipeWidth, 
-                    height: gameHeight - pipe.topHeight - pipeGap 
+                    height: gameHeight - pipe.topHeight - pipe.pipeGap 
                   }}
                 >
                   <div className="absolute top-0 left-0 right-0 h-10 bg-green-500 border-b-2 border-green-700"></div>
                 </div>
                 
-                {!pipe.passed && (
+                {pipe.isGoalPipe && !pipe.passed && (
                   <>
                     <div 
                       className="absolute border-2 border-dashed border-yellow-400"
@@ -498,7 +548,7 @@ const FlappyBird = () => {
                         left: pipe.worldX,
                         top: pipe.topHeight,
                         width: pipeWidth,
-                        height: pipeGap
+                        height: pipe.pipeGap
                       }}
                     >
                       <div className="absolute inset-0 flex items-center justify-center text-yellow-400 text-2xl font-bold">
@@ -566,32 +616,34 @@ const FlappyBird = () => {
             </div>
           )}
 
-          <div className="absolute top-4 left-4 text-5xl font-bold text-white drop-shadow-lg z-10">
-            {score}
-          </div>
+          {gameState !== 'start' && (
+            <div className="absolute top-4 left-4 text-5xl font-bold text-white drop-shadow-lg z-10">
+              {score}
+            </div>
+          )}
 
           {gameState === 'start' && (
-            <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-sky-500 to-sky-300">
+            <div className="absolute inset-0 flex items-center justify-center bg-sky-400">
+              <div className="absolute top-4 left-4 flex items-baseline gap-2 z-10">
+                <span className="text-5xl font-bold text-white drop-shadow-lg">High Score:</span>
+                <span className="text-5xl font-bold text-white drop-shadow-lg">{highScore}</span>
+              </div>
               <div className="text-center px-8">
-                <div className="mb-6">
+                <div className="mb-8">
                   <h2 className="text-5xl font-bold text-white drop-shadow-lg mb-2">Slingshot Bird</h2>
                   <p className="text-xl text-yellow-300 font-semibold">Reach 30 pipes to win!</p>
                 </div>
-                <div className="bg-white bg-opacity-90 p-4 rounded-2xl mb-4 max-w-sm mx-auto">
-                  <h3 className="text-xl font-bold text-gray-800 mb-3">How to Play</h3>
-                  <div className="text-left space-y-1 text-gray-700 text-sm">
+                <div className="mb-6">
+                  <h3 className="text-3xl font-bold text-white drop-shadow-lg mb-4">How to Play</h3>
+                  <div className="text-center space-y-2 text-white text-lg drop-shadow">
                     <p>Drag the bird back like a slingshot</p>
                     <p>Release to launch through the gap</p>
                     <p>Touch the blue line to score</p>
                     <p>Collect coins to shrink smaller</p>
                     <p>Miss coins and grow bigger!</p>
-                    <p>Pipes 6-10: Moving obstacles</p>
-                    <p>Pipes 11-30: Moving both ways!</p>
+                    <p>The difficulty will dynamically adjust</p>
                   </div>
                 </div>
-                {highScore > 0 && (
-                  <p className="text-yellow-300 text-xl mb-4">High Score: {highScore}</p>
-                )}
                 <button 
                   onClick={startGame}
                   className="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-4 px-10 rounded-full text-2xl shadow-2xl transform hover:scale-105 transition"
@@ -635,7 +687,7 @@ const FlappyBird = () => {
           )}
 
           {gameState === 'win' && (
-            <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-yellow-400 to-orange-400 z-20">
+            <div className="absolute inset-0 flex items-center justify-center bg-yellow-400 z-20">
               <div className="text-center bg-white p-10 rounded-2xl shadow-2xl">
                 <p className="text-green-600 text-6xl font-bold mb-4">YOU WIN!</p>
                 <p className="text-gray-800 text-4xl mb-2">Perfect Score: 30/30</p>
